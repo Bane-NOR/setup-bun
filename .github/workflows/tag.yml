@@ -31,13 +31,13 @@ jobs:
               "Go": "go"
             };
 
-            // Retrieve languages used in the repository.
+            // Retrieve the languages used in the repository.
             const response = await github.request("GET /repos/{owner}/{repo}/languages", {
               owner: context.repo.owner,
               repo: context.repo.repo,
             });
             const repoLanguages = Object.keys(response.data);
-            // Map and filter to include only the languages supported by CodeQL.
+            // Map to CodeQL identifiers and filter out unsupported languages.
             const codeqlLangs = repoLanguages
               .map(lang => supported[lang])
               .filter(lang => !!lang);
@@ -48,15 +48,16 @@ jobs:
             console.log("Detected CodeQL languages: " + codeqlLangs.join(", "));
             core.setOutput("codeql_languages", codeqlLangs.join(","));
 
-      # Initialize CodeQL using the auto-detected languages.
+      # Initialize CodeQL using v3 and disable the default setup to avoid SARIF conflicts.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v2
+        uses: github/codeql-action/init@v3
         with:
           languages: ${{ steps.detect_lang.outputs.codeql_languages }}
+          disable-default-setup: true
 
-      # Run the CodeQL analysis.
+      # Run the CodeQL analysis using v3.
       - name: Run CodeQL Analysis
-        uses: github/codeql-action/analyze@v2
+        uses: github/codeql-action/analyze@v3
 
       # Update (or create) the fixed "v1" tag to point to the current commit.
       - name: Update Maintained Tag (v1)
@@ -65,8 +66,8 @@ jobs:
         with:
           script: |
             const tagName = "v1";
-            // Attempt to update the tag; if it doesn't exist, create it.
             try {
+              // Try to update the tag reference (force-update).
               await github.git.updateRef({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -77,7 +78,7 @@ jobs:
               console.log("Tag updated successfully to commit " + context.sha);
             } catch (error) {
               if (error.status === 404) {
-                // Tag doesn't exist—create it.
+                // If the tag doesn't exist, create it.
                 await github.git.createRef({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -90,7 +91,7 @@ jobs:
               }
             }
 
-      # Use the GitHub API to protect the main branch.
+      # Apply branch protection rules on the main branch via the GitHub API.
       - name: Protect Main Branch via GitHub API
         if: ${{ success() }}
         uses: actions/github-script@v6
@@ -100,7 +101,7 @@ jobs:
             const protectionSettings = {
               required_status_checks: {
                 strict: true,
-                contexts: ["codeql"]
+                contexts: ["codeql"] // Adjust if your CodeQL check context name is different.
               },
               enforce_admins: true,
               required_pull_request_reviews: {
