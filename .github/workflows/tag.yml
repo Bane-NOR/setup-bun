@@ -1,0 +1,124 @@
+name: CodeQL Analysis, Auto-Detect Languages, and Update v1 Tag
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  codeql-analysis:
+    name: CodeQL Analysis & Tag Update
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      # Auto-detect supported languages by querying the GitHub API.
+      - name: Detect Supported Languages
+        id: detect_lang
+        uses: actions/github-script@v6
+        with:
+          script: |
+            // Mapping from GitHub language names to CodeQL language identifiers.
+            const supported = {
+              "JavaScript": "javascript",
+              "TypeScript": "javascript",
+              "Python": "python",
+              "Java": "java",
+              "C++": "cpp",
+              "C": "cpp",
+              "C#": "csharp",
+              "Go": "go"
+            };
+
+            // Retrieve languages used in the repository.
+            const response = await github.request("GET /repos/{owner}/{repo}/languages", {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const repoLanguages = Object.keys(response.data);
+            // Map and filter to include only the languages supported by CodeQL.
+            const codeqlLangs = repoLanguages
+              .map(lang => supported[lang])
+              .filter(lang => !!lang);
+
+            if (codeqlLangs.length === 0) {
+              throw new Error("No supported languages detected for CodeQL analysis.");
+            }
+            console.log("Detected CodeQL languages: " + codeqlLangs.join(", "));
+            core.setOutput("codeql_languages", codeqlLangs.join(","));
+
+      # Initialize CodeQL using the auto-detected languages.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: ${{ steps.detect_lang.outputs.codeql_languages }}
+
+      # Run the CodeQL analysis.
+      - name: Run CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+
+      # Update (or create) the fixed "v1" tag to point to the current commit.
+      - name: Update Maintained Tag (v1)
+        if: ${{ success() }}
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const tagName = "v1";
+            // Attempt to update the tag; if it doesn't exist, create it.
+            try {
+              await github.git.updateRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${tagName}`,
+                sha: context.sha,
+                force: true
+              });
+              console.log("Tag updated successfully to commit " + context.sha);
+            } catch (error) {
+              if (error.status === 404) {
+                // Tag doesn't exist—create it.
+                await github.git.createRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `refs/tags/${tagName}`,
+                  sha: context.sha
+                });
+                console.log("Tag created successfully as " + tagName);
+              } else {
+                throw error;
+              }
+            }
+
+      # Use the GitHub API to protect the main branch.
+      - name: Protect Main Branch via GitHub API
+        if: ${{ success() }}
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const branch = "main";
+            const protectionSettings = {
+              required_status_checks: {
+                strict: true,
+                contexts: ["codeql"]
+              },
+              enforce_admins: true,
+              required_pull_request_reviews: {
+                dismiss_stale_reviews: true,
+                require_code_owner_reviews: true,
+                required_approving_review_count: 1
+              },
+              restrictions: null
+            };
+
+            console.log("Applying branch protection to branch:", branch);
+            await github.request('PUT /repos/{owner}/{repo}/branches/{branch}/protection', {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              branch: branch,
+              required_status_checks: protectionSettings.required_status_checks,
+              enforce_admins: protectionSettings.enforce_admins,
+              required_pull_request_reviews: protectionSettings.required_pull_request_reviews,
+              restrictions: protectionSettings.restrictions
+            });
+            console.log("Branch protection set successfully");
